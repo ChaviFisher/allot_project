@@ -1,0 +1,9 @@
+{
+    "request_packet_threshold": 700,
+    "min_video_connection_size": 1048576,
+    "inbound_packets_in_range_min": 500,
+    "inbound_packets_in_range_max": 2000, 
+    "max_number_of_connections": 1000,
+    "max_number_of_transaction_per_video": 1000,
+    "video_connection_timeout": 20
+}
