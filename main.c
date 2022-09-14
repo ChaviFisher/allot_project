@@ -13,8 +13,9 @@
 #include "structs.h"
 
 #define YOUTUBE_PORT 443
+#define HASH_TABLE_SIZE 1000
 
-static list **hash_table;
+static list *hash_table[HASH_TABLE_SIZE] = { NULL };
 static FILE *csvfile;
 static list *hash_used_places;
 static const int SIZEOF_ETHHDR = sizeof(struct ethhdr);
@@ -23,9 +24,9 @@ static const int SIZEOF_UDPHDR = sizeof(struct udphdr);
 
 int put_ini_data();
 int write_videos_statistics();
-static inline void req_packets_handle(uint, uint, double, five_tuple*);
-static inline void in_packets_handle(uint, uint, uint, double, five_tuple*);
-static inline void small_out_packets_handle(uint, double, five_tuple*);
+static inline void req_packets_handle(uint, uint, double, five_tuple *);
+static inline void in_packets_handle(uint, uint, uint, double, five_tuple *);
+static inline void small_out_packets_handle(uint, double, five_tuple *);
 static inline five_tuple *create_key_of_5_tuple(int, int, int);
 static inline void write_connection_into_csv(connection *);
 
@@ -71,14 +72,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    hash_table = malloc(max_number_of_connections * sizeof(list*));
+    // intialize hash_used_place list
     hash_used_places = create_list();
 
     struct pcap_pkthdr *pkthdr;
     const u_char *packet;
 
     // beyond on the packets
-    while (pcap_next_ex(pcapfile, &pkthdr, &packet) >= 0)
+    while (pcap_next_ex(pcapfile, &pkthdr, &packet) >= 0 && sum_conn < max_number_of_connections)
     {
         struct iphdr *ipHeader = (struct iphdr *)(packet + SIZEOF_ETHHDR);
 
@@ -92,10 +93,9 @@ int main(int argc, char **argv)
         u_int destPort = ntohs(udpHeader->dest);
         uint size = pkthdr->len - SIZEOF_ETHHDR - SIZEOF_IPHDR - SIZEOF_UDPHDR;
 
-        if (destPort != YOUTUBE_PORT && (sourcePort != YOUTUBE_PORT || 
-            size < inbound_packets_in_range_min || 
-            size > inbound_packets_in_range_max)
-            )
+        if (destPort != YOUTUBE_PORT && (sourcePort != YOUTUBE_PORT ||
+                                         size < inbound_packets_in_range_min ||
+                                         size > inbound_packets_in_range_max))
         {
             continue;
         }
@@ -108,14 +108,14 @@ int main(int argc, char **argv)
         {
             five_tuple *key = create_key_of_5_tuple(
                 ipHeader->daddr, ipHeader->saddr, destPort);
-            uint hash_index = (src_ip + dest_ip + destPort) % max_number_of_connections;
+            uint hash_index = (src_ip + dest_ip + destPort) % HASH_TABLE_SIZE;
             in_packets_handle(hash_index, size, destPort, epoch_time, key);
         }
         else
         {
             five_tuple *key = create_key_of_5_tuple(
                 ipHeader->saddr, ipHeader->daddr, sourcePort);
-            uint hash_index = (src_ip + dest_ip + sourcePort) % max_number_of_connections;
+            uint hash_index = (src_ip + dest_ip + sourcePort) % HASH_TABLE_SIZE;
             if (size >= request_packet_threshold)
             {
                 req_packets_handle(hash_index, sourcePort, epoch_time, key);
@@ -127,13 +127,13 @@ int main(int argc, char **argv)
         }
     }
 
-    // release and write the connections that remain in the table 
+    // release and write the connections that remain in the table
     while (hash_used_places->size > 0)
     {
-        list *conn_list = (list*)pop_front(hash_used_places);
+        list *conn_list = (list *)pop_front(hash_used_places);
         while (conn_list->size > 0)
         {
-            connection* conn = (connection*)pop_back(conn_list);
+            connection *conn = (connection *)pop_back(conn_list);
             if (conn->size >= min_video_connection_size)
             {
                 write_connection_into_csv(conn);
@@ -151,10 +151,9 @@ int main(int argc, char **argv)
         printf("Unable to open csv file for videos statistics.\n");
         return 1;
     }
-    
+
     // free reachables
     free(hash_used_places);
-    free(hash_table);
     free(errbuf);
 
     return 0;
@@ -166,13 +165,13 @@ int main(int argc, char **argv)
 // else it searchs in the list a connection with the tuples of the packet,
 // if not found - creates new connection (include new transaction) and pushes to the list.
 // else, inserts new transaction to the connection's transactions list.
-static inline void req_packets_handle(uint hash_index, uint sourcePort, double epoch_time, five_tuple* key)
+static inline void req_packets_handle(uint hash_index, uint sourcePort, double epoch_time, five_tuple *key)
 {
     list *conn_list = hash_table[hash_index];
-    if (conn_list == NULL)
+    if (conn_list == NULL && sum_all_conn < max_number_of_connections)
     {
         conn_list = malloc(SIZEOF_LIST);
-        node* conn_node = malloc(SIZEOF_NODE);
+        node *conn_node = malloc(SIZEOF_NODE);
         connection *conn = create_conn(epoch_time, key);
         conn_node->data = conn;
         conn_node->next = conn_node->prev = NULL;
@@ -184,14 +183,14 @@ static inline void req_packets_handle(uint hash_index, uint sourcePort, double e
     else
     {
         node *conn_node = find_conn_in_list(conn_list, key);
-        if (conn_node == NULL)
+        if (conn_node == NULL && sum_all_conn < max_number_of_connections)
         {
-            connection* conn = create_conn(epoch_time, key);
+            connection *conn = create_conn(epoch_time, key);
             push_front(conn_list, conn);
         }
         else
         {
-            connection *conn = (connection*)conn_node->data;
+            connection *conn = (connection *)conn_node->data;
             transaction *trans = create_trans(epoch_time);
             push_front(conn->trans_list, trans);
             conn->end_time = epoch_time;
@@ -200,21 +199,20 @@ static inline void req_packets_handle(uint hash_index, uint sourcePort, double e
 }
 
 // this function handles the inbound packets.
-// it checks if exists connection with the packet's tuples, with help of the hash table, 
+// it checks if exists connection with the packet's tuples, with help of the hash table,
 // if exit checks if the connection closed due to the timeout or number of transactions.
 // if closed write the connection into csvfile, delete it from the list, and ignore the packet.
 // else update the connection and his last transaction matching to the packet.
-// if connection not exists, ignore the packet. 
-static inline void in_packets_handle(uint hash_index, uint size, uint destPort, double epoch_time, five_tuple* key)
+// if connection not exists, ignore the packet.
+static inline void in_packets_handle(uint hash_index, uint size, uint destPort, double epoch_time, five_tuple *key)
 {
-    list* conn_list = hash_table[hash_index];
-    node* conn_node = find_conn_in_list(conn_list, key);
+    list *conn_list = hash_table[hash_index];
+    node *conn_node = find_conn_in_list(conn_list, key);
     if (conn_node != NULL)
     {
-        connection *conn = (connection*)conn_node->data;
-        if (epoch_time - conn->end_time > video_connection_timeout || 
-            conn->trans_list->size >= max_number_of_transaction_per_video
-           )
+        connection *conn = (connection *)conn_node->data;
+        if (epoch_time - conn->end_time > video_connection_timeout ||
+            conn->trans_list->size >= max_number_of_transaction_per_video)
         {
             if (conn->size >= min_video_connection_size)
             {
@@ -225,8 +223,8 @@ static inline void in_packets_handle(uint hash_index, uint size, uint destPort, 
         else
         {
             conn->size += size;
-            node *trans_node =  conn->trans_list->head;
-            transaction* trans = (transaction*)trans_node->data;
+            node *trans_node = conn->trans_list->head;
+            transaction *trans = (transaction *)trans_node->data;
             double diff = epoch_time - conn->end_time;
             conn->end_time = trans->end_time = epoch_time;
             trans->num_in_packets++;
@@ -263,28 +261,28 @@ static inline void in_packets_handle(uint hash_index, uint size, uint destPort, 
                     }
                 }
             }
-        } 
+        }
     }
 }
 
 // this function handles the small outbound packets.
 // it finds the connection who has the tuples of the packet, if exists,
-// and updates his end_time and num_out_packets of his last transaction. 
+// and updates his end_time and num_out_packets of his last transaction.
 static inline void small_out_packets_handle(uint hash_index, double epoch_time, five_tuple *key)
 {
     list *conn_list = hash_table[hash_index];
     node *conn_node = find_conn_in_list(conn_list, key);
     if (conn_node != NULL)
     {
-        connection *conn = (connection*)conn_node->data;
+        connection *conn = (connection *)conn_node->data;
         node *trans_node = conn->trans_list->head;
-        transaction* trans = (transaction*)trans_node->data;
+        transaction *trans = (transaction *)trans_node->data;
         trans->num_out_packets++;
         conn->end_time = epoch_time;
     }
 }
 
-// this function gets the unique tuples of youtube packet, 
+// this function gets the unique tuples of youtube packet,
 // creates a struct that contains them and returns his pointer.
 static inline five_tuple *create_key_of_5_tuple(int client_ip, int server_ip, int clientPort)
 {
@@ -320,7 +318,7 @@ static inline void write_connection_into_csv(connection *conn)
 
     while (trans_node != NULL)
     {
-        transaction* trans = (transaction*)trans_node->data;
+        transaction *trans = (transaction *)trans_node->data;
 
         average_duration_of_the_TDRs_per_video += trans->end_time - trans->start_time;
         average_time_between_two_consecutive_TDRs += trans->start_time - prev_time;
@@ -331,16 +329,16 @@ static inline void write_connection_into_csv(connection *conn)
         struct tm *tmp = localtime(&packet_time);
 
         fprintf(csvfile, "%d, %s, %s, %d, %d, %d, %d, "
-            "%d:%d:%d, %d, %d, %d, %d, %lf, %lf, %lf\n",
-            sum_conn, server_addr, inet_ntoa(addr), IPPROTO_UDP,
-            conn->key->udp_client_port, YOUTUBE_PORT,
-            trans_id++, tmp->tm_hour, tmp->tm_min, tmp->tm_sec,
-            trans->num_in_packets, trans->num_out_packets,
-            trans->max_packet_size_in, trans->min_packet_size_in,
-            trans->max_diff_time_in, trans->min_diff_time_in, trans->RTT);
+                         "%d:%d:%d, %d, %d, %d, %d, %lf, %lf, %lf\n",
+                sum_conn, server_addr, inet_ntoa(addr), IPPROTO_UDP,
+                conn->key->udp_client_port, YOUTUBE_PORT,
+                trans_id++, tmp->tm_hour, tmp->tm_min, tmp->tm_sec,
+                trans->num_in_packets, trans->num_out_packets,
+                trans->max_packet_size_in, trans->min_packet_size_in,
+                trans->max_diff_time_in, trans->min_diff_time_in, trans->RTT);
 
         free(trans);
-        node* prev = trans_node->prev;
+        node *prev = trans_node->prev;
         free(trans_node);
         trans_node = prev;
     }
@@ -421,9 +419,9 @@ int write_videos_statistics()
     fprintf(csvfile, "Average size of the TDRs per video, %lf\n", average_size_of_the_TDRs_per_video);
     fprintf(csvfile, "Average duration of the TDRs per video, %lf\n", average_duration_of_the_TDRs_per_video);
     fprintf(csvfile, "Average time between two consecutive TDRs in a video, %lf\n", average_time_between_two_consecutive_TDRs);
-    
+
     fclose(csvfile);
-    
+
     // print for visual fidback
     printf("How many videos connections have been watched: %d\n", sum_conn);
     printf("Average duration of the videos: %lf\n", average_duration_of_the_videos);
