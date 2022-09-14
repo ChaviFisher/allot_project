@@ -70,7 +70,7 @@ static inline transaction* create_trans(double epoch_time)
     transaction *trans = malloc(SIZEOF_TRANS);
     trans->start_time = trans->end_time = epoch_time;
     trans->num_out_packets = 0;
-    trans->RTT = -1;
+    trans->num_in_packets = 0;
     sum_all_trans++;
     return trans;
 }

@@ -58,10 +58,10 @@ int main(int argc, char **argv)
         return 1;
     }
     fprintf(csvfile, "Conn_id, Client_IP, Server_IP, IP_protocol,"
-                     "UDP_client_port, UDP_server_port, Transaction_id, Start time,"
-                     "num_in_packets, num_out_packets, max_packet_size_in, "
-                     "min_packet_size_in, max_diff_time_in, min_diff_time_in, "
-                     "SumSquareInPacketTimeDiff, RTT\n");
+                     "UDP_client_port, UDP_server_port, Transaction_id,"
+                     "Start time, num_in_packets, num_out_packets,"
+                     "max_packet_size_in, min_packet_size_in,"
+                     "max_diff_time_in, min_diff_time_in,  RTT\n");
 
     // open pcap file
     struct pcap *pcapfile = pcap_open_offline("pcap_file.pcap", errbuf);
@@ -229,17 +229,15 @@ static inline void in_packets_handle(uint hash_index, uint size, uint destPort, 
             transaction* trans = (transaction*)trans_node->data;
             double diff = epoch_time - conn->end_time;
             conn->end_time = trans->end_time = epoch_time;
-            if (trans->RTT == -1)
+            trans->num_in_packets++;
+            if (trans->num_in_packets == 1)
             {
                 trans->RTT = diff;
-                trans->num_in_packets = 1;
                 trans->min_packet_size_in = size;
                 trans->max_packet_size_in = size;
-                trans->min_diff_time_in = -1;
             }
             else
             {
-                trans->num_in_packets++;
                 if (trans->min_packet_size_in > size)
                 {
                     trans->min_packet_size_in = size;
@@ -248,7 +246,7 @@ static inline void in_packets_handle(uint hash_index, uint size, uint destPort, 
                 {
                     trans->max_packet_size_in = size;
                 }
-                if (trans->min_diff_time_in == -1)
+                if (trans->num_in_packets == 2)
                 {
                     trans->min_diff_time_in = diff;
                     trans->max_diff_time_in = diff;
@@ -333,9 +331,8 @@ static inline void write_connection_into_csv(connection *conn)
         struct tm *tmp = localtime(&packet_time);
 
         fprintf(csvfile, "%d, %s, %s, %d, %d, %d, %d, "
-            "%d:%d:%d, %d, %d, %d, %d, %lf, %lf, null, %lf\n",
-            sum_conn, server_addr,
-            inet_ntoa(addr), IPPROTO_UDP,
+            "%d:%d:%d, %d, %d, %d, %d, %lf, %lf, %lf\n",
+            sum_conn, server_addr, inet_ntoa(addr), IPPROTO_UDP,
             conn->key->udp_client_port, YOUTUBE_PORT,
             trans_id++, tmp->tm_hour, tmp->tm_min, tmp->tm_sec,
             trans->num_in_packets, trans->num_out_packets,
