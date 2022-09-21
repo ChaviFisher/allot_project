@@ -1,16 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// variables for iniFile's data
-int request_packet_threshold;
-int min_video_connection_size;
-int inbound_packets_in_range_min;
-int inbound_packets_in_range_max;
-int max_number_of_connections;
-int max_number_of_transaction_per_video;
-int video_connection_timeout;
-
-
 typedef struct node {
     void* data;
     struct node* next;
@@ -19,6 +9,7 @@ typedef struct node {
 
 const int SIZEOF_NODE = sizeof(node);
 
+// for connections list, transactions list...
 typedef struct list {
     node* head;
     node* tail;
@@ -44,18 +35,18 @@ typedef struct transaction
 const int SIZEOF_TRANS = sizeof(transaction);
 static int sum_all_trans = 0;
 
-typedef struct five_tuple
+typedef struct tuples
 {
     int client_ip_address;
     int server_ip_address;
     int udp_client_port;
-} five_tuple;
+} tuples;
 
-const int SIZEOF_FIVET = sizeof(five_tuple);
+const int SIZEOF_TUPLES = sizeof(tuples);
 
 typedef struct connection
 {
-    five_tuple *key;
+    tuples *key;
     list *trans_list;
     double start_time;
     double end_time;
@@ -75,7 +66,7 @@ static inline transaction* create_trans(double epoch_time)
     return trans;
 }
 
-static inline connection* create_conn(double epoch_time, five_tuple *key)
+static inline connection* create_conn(double epoch_time, tuples *key)
 {
     connection *conn = malloc(SIZEOF_CONN);
     conn->key = key;
@@ -184,12 +175,12 @@ static inline void* pop_front(list* l) {
     return data;
 }
 
-static inline int equal(five_tuple *key1, five_tuple *key2)
+static inline int equal(tuples *key1, tuples *key2)
 {
     return key1->udp_client_port == key2->udp_client_port && key1->server_ip_address == key2->server_ip_address && key1->client_ip_address == key2->client_ip_address;
 }
 
-static inline node* find_conn_in_list(list* l, five_tuple* key)
+static inline node* find_conn_in_list(list* l, tuples* key)
 {
     if (l == NULL)
     {
