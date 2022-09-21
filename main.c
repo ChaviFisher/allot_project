@@ -118,23 +118,23 @@ int main(int argc, char **argv)
         double epoch_time = pkthdr->ts.tv_sec + (double)pkthdr->ts.tv_usec / 1000000;
 
         if (sourcePort == YOUTUBE_PORT)
-        { // TODO comments
-            tuples *key = create_key_of_3_tuple(
+        {                                        // if it is inbound packet
+            tuples *key = create_key_of_3_tuple( // create the key by the dest address and dest port for the client data, and the src address for the server address.
                 ipHeader->daddr, ipHeader->saddr, destPort);
-            uint hash_index = (src_ip + dest_ip + destPort) % HASH_TABLE_SIZE;
-            inbound_packets_handle(hash_index, packet_size, destPort, epoch_time, key);
+            uint hash_index = (src_ip + dest_ip + destPort) % HASH_TABLE_SIZE;          // get the hash_index by the key's tuples.
+            inbound_packets_handle(hash_index, packet_size, destPort, epoch_time, key); // handle it in inbound-packets handler
         }
         else
-        { // TODO comments
-            tuples *key = create_key_of_3_tuple(
+        {                                        // else, it is outbound packet, so:
+            tuples *key = create_key_of_3_tuple( // create the key by the src address and src port for the client data, and the dest address for the server address.
                 ipHeader->saddr, ipHeader->daddr, sourcePort);
-            uint hash_index = (src_ip + dest_ip + sourcePort) % HASH_TABLE_SIZE;
+            uint hash_index = (src_ip + dest_ip + sourcePort) % HASH_TABLE_SIZE; // get the hash_index by the key's tuples.
             if (packet_size >= request_packet_threshold)
-            {
+            { // if it is request packet, handle it in request-packets handler
                 req_packets_handle(hash_index, sourcePort, epoch_time, key);
             }
             else
-            {
+            { // else it is a small outbound packet, handle in his handler.
                 small_out_packets_handle(hash_index, epoch_time, key);
             }
         }
@@ -191,23 +191,43 @@ static inline void req_packets_handle(uint hash_index, uint sourcePort, double e
         conn_list->head = conn_list->tail = conn_node;
         conn_list->size = 1;
         hash_table[hash_index] = conn_list;
-        // TODO comments
+        // since a new cell in the table is now used, add it to the used pleaces's list
         push_back(hash_used_places, conn_list);
     }
     else
     {
         node *conn_node = find_conn_in_list(conn_list, key);
-        if (conn_node == NULL && sum_all_conn < max_number_of_connections)
-        {
-            connection *conn = create_conn(epoch_time, key);
-            push_front(conn_list, conn);
+        if (conn_node == NULL)
+        { // if there is no such connection
+            if (sum_all_conn < max_number_of_connections)
+            { // if can still create more one
+                connection *conn = create_conn(epoch_time, key);
+                push_front(conn_list, conn);
+            }
         }
         else
-        {
+        { // else, there is the connection
             connection *conn = (connection *)conn_node->data;
-            transaction *trans = create_trans(epoch_time);
-            push_front(conn->trans_list, trans);
-            conn->end_time = epoch_time;
+            if (conn->trans_list->size >= max_number_of_transaction_per_video)
+            { // if the connection is closed bacuse it has reached the allowed packet limit
+                if (conn->size >= min_video_connection_size)
+                { // if his size meets video requirements, write him into csv file
+                    write_connection_into_csv(conn);
+                }
+                delete_from_list(conn_list, conn_node);
+
+                if (sum_all_conn < max_number_of_connections)
+                { // if can still create more one
+                    connection *conn = create_conn(epoch_time, key);
+                    push_front(conn_list, conn);
+                }
+            }
+            else
+            { // else, the connection is not closed, so add him new transaction
+                transaction *trans = create_trans(epoch_time);
+                push_front(conn->trans_list, trans);
+                conn->end_time = epoch_time;
+            }
         }
     }
 }
@@ -218,49 +238,48 @@ static inline void req_packets_handle(uint hash_index, uint sourcePort, double e
 // if closed write the connection into csvfile, delete it from the list, and ignore the packet.
 // else update the connection and his last transaction matching to the packet.
 // if connection not exists, ignore the packet.
-static inline void inbound_packets_handle(uint hash_index, uint size, uint destPort, double epoch_time, tuples *key)
+static inline void inbound_packets_handle(uint hash_index, uint packet_size, uint destPort, double epoch_time, tuples *key)
 {
     list *conn_list = hash_table[hash_index];
     node *conn_node = find_conn_in_list(conn_list, key);
     if (conn_node == NULL)
-    {
+    { // if there is no such connection
         return;
     }
     connection *conn = (connection *)conn_node->data;
-    if (epoch_time - conn->end_time > video_connection_timeout ||
-        conn->trans_list->size >= max_number_of_transaction_per_video)
-    {
+    if (epoch_time - conn->end_time > video_connection_timeout)
+    { // if the connection is closed because the timeout
         if (conn->size >= min_video_connection_size)
-        {
+        { // if if his size meets video requirements, write him into csv file
             write_connection_into_csv(conn);
         }
         delete_from_list(conn_list, conn_node);
         return;
     }
-    // TODO (size, comments)
-    conn->size += size;
+    // go to tha last transaction of this connection, and update her data
+    conn->size += packet_size;
     node *trans_node = conn->trans_list->head;
     transaction *trans = (transaction *)trans_node->data;
     double diff = epoch_time - conn->end_time;
     conn->end_time = trans->end_time = epoch_time;
     trans->num_in_packets++;
     if (trans->num_in_packets == 1)
-    { // TODO (comments)
+    { // if it is the first inbound packet in this transaction
         trans->RTT = diff;
-        trans->min_packet_size_in = size;
-        trans->max_packet_size_in = size;
+        trans->min_packet_size_in = packet_size;
+        trans->max_packet_size_in = packet_size;
         return;
     }
-    if (trans->min_packet_size_in > size)
+    if (trans->min_packet_size_in > packet_size)
     {
-        trans->min_packet_size_in = size;
+        trans->min_packet_size_in = packet_size;
     }
-    else if (trans->max_packet_size_in < size)
+    else if (trans->max_packet_size_in < packet_size)
     {
-        trans->max_packet_size_in = size;
+        trans->max_packet_size_in = packet_size;
     }
     if (trans->num_in_packets == 2)
-    {
+    { // if it is the second inbound packet in this transaction
         trans->min_diff_time_in = diff;
         trans->max_diff_time_in = diff;
     }
@@ -285,7 +304,7 @@ static inline void small_out_packets_handle(uint hash_index, double epoch_time, 
     list *conn_list = hash_table[hash_index];
     node *conn_node = find_conn_in_list(conn_list, key);
     if (conn_node != NULL)
-    {
+    { // if there is such connection, update his last transaction and his end_time
         connection *conn = (connection *)conn_node->data;
         node *trans_node = conn->trans_list->head;
         transaction *trans = (transaction *)trans_node->data;
